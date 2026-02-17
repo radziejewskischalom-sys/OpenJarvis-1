@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import importlib
 from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
 
 from openjarvis.cli import cli
+
+_ask_mod = importlib.import_module("openjarvis.cli.ask")
 
 
 def _mock_engine(content="Hello from engine"):
@@ -75,12 +78,12 @@ def mock_setup():
     _register_agents()
     _register_tools()
     with (
-        patch("openjarvis.cli.ask.load_config") as mock_cfg,
-        patch("openjarvis.cli.ask.get_engine") as mock_ge,
-        patch("openjarvis.cli.ask.discover_engines") as mock_de,
-        patch("openjarvis.cli.ask.discover_models") as mock_dm,
-        patch("openjarvis.cli.ask.register_builtin_models"),
-        patch("openjarvis.cli.ask.merge_discovered_models"),
+        patch.object(_ask_mod, "load_config") as mock_cfg,
+        patch.object(_ask_mod, "get_engine") as mock_ge,
+        patch.object(_ask_mod, "discover_engines") as mock_de,
+        patch.object(_ask_mod, "discover_models") as mock_dm,
+        patch.object(_ask_mod, "register_builtin_models"),
+        patch.object(_ask_mod, "merge_discovered_models"),
     ):
         from openjarvis.core.config import JarvisConfig
         mock_cfg.return_value = JarvisConfig()

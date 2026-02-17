@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import importlib
 from unittest import mock
 
 from click.testing import CliRunner
 
 from openjarvis.cli import cli
+
+_ask_mod = importlib.import_module("openjarvis.cli.ask")
 
 
 def _mock_engine():
@@ -27,21 +30,21 @@ def _mock_engine():
 def _patch_engine(engine):
     """Return context managers that patch engine discovery to use our mock."""
     return (
-        mock.patch(
-            "openjarvis.cli.ask.get_engine",
+        mock.patch.object(
+            _ask_mod, "get_engine",
             return_value=("mock", engine),
         ),
-        mock.patch(
-            "openjarvis.cli.ask.discover_engines",
+        mock.patch.object(
+            _ask_mod, "discover_engines",
             return_value={"mock": engine},
         ),
-        mock.patch(
-            "openjarvis.cli.ask.discover_models",
+        mock.patch.object(
+            _ask_mod, "discover_models",
             return_value={"mock": ["test-model"]},
         ),
-        mock.patch("openjarvis.cli.ask.register_builtin_models"),
-        mock.patch("openjarvis.cli.ask.merge_discovered_models"),
-        mock.patch("openjarvis.cli.ask.TelemetryStore"),
+        mock.patch.object(_ask_mod, "register_builtin_models"),
+        mock.patch.object(_ask_mod, "merge_discovered_models"),
+        mock.patch.object(_ask_mod, "TelemetryStore"),
     )
 
 
@@ -95,8 +98,8 @@ class TestAskRouter:
         patches = _patch_engine(engine)
         with (
             patches[0], patches[1], patches[2], patches[3], patches[4], patches[5],
-            mock.patch(
-                "openjarvis.cli.ask.load_config",
+            mock.patch.object(
+                _ask_mod, "load_config",
             ) as mock_config,
         ):
             cfg = mock_config.return_value

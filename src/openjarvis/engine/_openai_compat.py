@@ -47,6 +47,10 @@ class _OpenAICompatibleEngine(InferenceEngine):
         }
         try:
             resp = self._client.post("/v1/chat/completions", json=payload)
+            if resp.status_code == 400 and "tools" in payload:
+                payload.pop("tools", None)
+                payload.pop("tool_choice", None)
+                resp = self._client.post("/v1/chat/completions", json=payload)
             resp.raise_for_status()
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             raise EngineConnectionError(

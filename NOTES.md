@@ -230,6 +230,12 @@ Same for SDK tests: `patch("openjarvis.sdk.get_engine", ...)`.
 
 `EventBus()` creates a new instance each time, but `EventBus._default_listeners` is a class variable. The `conftest.py` fixture resets it. If tests subscribe to events, subscriptions won't persist across tests.
 
+### 8. Module Shadowing in CLI Package
+
+In `cli/__init__.py`, `from openjarvis.cli.ask import ask` imports the Click command. This shadows the module name. When you try `mock.patch("openjarvis.cli.ask.get_engine")`, Python resolves `openjarvis.cli.ask` as the Click command (via attribute lookup on the package), not the module.
+
+**Fix:** Use `importlib.import_module("openjarvis.cli.ask")` to get the actual module object, then `mock.patch.object(module, "get_engine")`.
+
 ---
 
 ## Post-v1.0: Unimplemented Ideas from VISION.md
@@ -428,5 +434,28 @@ python -c "from openjarvis import Jarvis; print(Jarvis)"
 3. `ChunkConfig(overlap=...)` should be `ChunkConfig(chunk_overlap=...)` — fixed
 4. `chunk.text` should be `chunk.content` — fixed
 5. Test content too short for chunking (0 chunks produced) — used 100 words
+
+**Final: 520 passed, 8 skipped, 0 failures, ruff clean**
+
+### Session 2 (2026-02-17) — Test Fixes + Live vLLM Testing
+
+**Scope:** Fix broken tests, set up live vLLM inference testing
+
+**Work completed:**
+- Fixed 6 failed + 13 errored tests in `tests/cli/test_ask_router.py` and `tests/cli/test_ask_agent.py`
+  - **Root cause:** `from openjarvis.cli.ask import ask` in `cli/__init__.py` shadows the `ask` module with the Click command object. When `mock.patch("openjarvis.cli.ask.get_engine")` resolves, it tries to patch an attribute on the Click command, not the module.
+  - **Fix:** Use `importlib.import_module("openjarvis.cli.ask")` + `mock.patch.object(_ask_mod, "get_engine")` instead of string-based patching.
+- Added tool fallback in `_openai_compat.py`: if server returns 400 when tools are sent (e.g., vLLM without `--enable-auto-tool-choice`), retry without tools.
+- Verified live vLLM testing: existing vLLM server on port 8003 with `Qwen/Qwen3-8B`
+- Tested: `jarvis ask`, `jarvis bench run`, `jarvis model list`, `jarvis memory index/search`, `jarvis telemetry stats`, SDK `Jarvis.ask()` and `ask_full()`
+
+**Gotcha discovered:**
+8. **Module shadowing with `from X import Y`** — If a package's `__init__.py` does `from openjarvis.cli.ask import ask`, then `openjarvis.cli.ask` in `sys.modules` is the *module*, but accessing it via attribute lookup on `openjarvis.cli` gives the imported *object* (the Click command). Use `importlib.import_module()` for reliable module access when patching.
+
+**Live vLLM setup notes:**
+- vLLM 0.15.1 running on Lambda cluster (8x A100-SXM4-80GB)
+- Config: `~/.openjarvis/config.toml` with `vllm_host = "http://localhost:8003"` and `default_model = "Qwen/Qwen3-8B"`
+- Tool calling requires `--enable-auto-tool-choice --tool-call-parser hermes` flags on vLLM server
+- Without tool support, orchestrator falls back to reasoning-only mode
 
 **Final: 520 passed, 8 skipped, 0 failures, ruff clean**
