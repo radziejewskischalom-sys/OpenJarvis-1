@@ -1,0 +1,160 @@
+"""ABC for tool implementations and the ToolExecutor dispatch engine.
+
+Follows the same registry pattern as ``engine/_stubs.py`` and ``memory/_stubs.py``.
+Each tool is registered via ``@ToolRegistry.register("name")`` and implements
+``BaseTool`` with a ``spec`` property and ``execute()`` method.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
+
+from openjarvis.core.events import EventBus, EventType
+from openjarvis.core.types import ToolCall, ToolResult
+
+# ---------------------------------------------------------------------------
+# ToolSpec — metadata describing a tool's interface
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class ToolSpec:
+    """Declarative description of a tool's interface and characteristics."""
+
+    name: str
+    description: str
+    parameters: Dict[str, Any] = field(default_factory=dict)
+    category: str = ""
+    cost_estimate: float = 0.0
+    latency_estimate: float = 0.0
+    requires_confirmation: bool = False
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# BaseTool ABC
+# ---------------------------------------------------------------------------
+
+
+class BaseTool(ABC):
+    """Base class for all tool implementations.
+
+    Subclasses must be registered via
+    ``@ToolRegistry.register("name")`` to become discoverable.
+    """
+
+    tool_id: str
+
+    @property
+    @abstractmethod
+    def spec(self) -> ToolSpec:
+        """Return the tool specification."""
+
+    @abstractmethod
+    def execute(self, **params: Any) -> ToolResult:
+        """Execute the tool with the given parameters."""
+
+    def to_openai_function(self) -> Dict[str, Any]:
+        """Convert to OpenAI function-calling format."""
+        s = self.spec
+        return {
+            "type": "function",
+            "function": {
+                "name": s.name,
+                "description": s.description,
+                "parameters": s.parameters,
+            },
+        }
+
+
+# ---------------------------------------------------------------------------
+# ToolExecutor — dispatch engine for tool calls
+# ---------------------------------------------------------------------------
+
+
+class ToolExecutor:
+    """Dispatch tool calls to registered tools with event bus integration.
+
+    Parameters
+    ----------
+    tools:
+        List of tool instances to make available.
+    bus:
+        Optional event bus for publishing ``TOOL_CALL_START``/``TOOL_CALL_END``.
+    """
+
+    def __init__(
+        self,
+        tools: List[BaseTool],
+        bus: Optional[EventBus] = None,
+    ) -> None:
+        self._tools: Dict[str, BaseTool] = {t.spec.name: t for t in tools}
+        self._bus = bus
+
+    def execute(self, tool_call: ToolCall) -> ToolResult:
+        """Parse arguments, dispatch to tool, measure latency, emit events."""
+        tool = self._tools.get(tool_call.name)
+        if tool is None:
+            return ToolResult(
+                tool_name=tool_call.name,
+                content=f"Unknown tool: {tool_call.name}",
+                success=False,
+            )
+
+        # Parse arguments
+        try:
+            params = json.loads(tool_call.arguments) if tool_call.arguments else {}
+        except json.JSONDecodeError as exc:
+            return ToolResult(
+                tool_name=tool_call.name,
+                content=f"Invalid arguments JSON: {exc}",
+                success=False,
+            )
+
+        # Emit start event
+        if self._bus:
+            self._bus.publish(
+                EventType.TOOL_CALL_START,
+                {"tool": tool_call.name, "arguments": params},
+            )
+
+        # Execute with timing
+        t0 = time.time()
+        try:
+            result = tool.execute(**params)
+        except Exception as exc:
+            result = ToolResult(
+                tool_name=tool_call.name,
+                content=f"Tool execution error: {exc}",
+                success=False,
+            )
+        latency = time.time() - t0
+        result.latency_seconds = latency
+
+        # Emit end event
+        if self._bus:
+            self._bus.publish(
+                EventType.TOOL_CALL_END,
+                {
+                    "tool": tool_call.name,
+                    "success": result.success,
+                    "latency": latency,
+                },
+            )
+
+        return result
+
+    def available_tools(self) -> List[ToolSpec]:
+        """Return specs for all available tools."""
+        return [t.spec for t in self._tools.values()]
+
+    def get_openai_tools(self) -> List[Dict[str, Any]]:
+        """Return tools in OpenAI function-calling format."""
+        return [t.to_openai_function() for t in self._tools.values()]
+
+
+__all__ = ["BaseTool", "ToolExecutor", "ToolSpec"]

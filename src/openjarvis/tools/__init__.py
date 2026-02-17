@@ -1,0 +1,35 @@
+"""Tools pillar — tool system with ABC interface and built-in tools."""
+
+from __future__ import annotations
+
+from openjarvis.tools._stubs import BaseTool, ToolExecutor, ToolSpec
+
+# Import built-in tools to trigger @ToolRegistry.register() decorators.
+# Each is wrapped in try/except so the package loads even before the
+# individual tool modules are created.
+try:
+    import openjarvis.tools.calculator  # noqa: F401
+except ImportError:
+    pass
+
+try:
+    import openjarvis.tools.think  # noqa: F401
+except ImportError:
+    pass
+
+try:
+    import openjarvis.tools.retrieval  # noqa: F401
+except ImportError:
+    pass
+
+try:
+    import openjarvis.tools.llm_tool  # noqa: F401
+except ImportError:
+    pass
+
+try:
+    import openjarvis.tools.file_read  # noqa: F401
+except ImportError:
+    pass
+
+__all__ = ["BaseTool", "ToolExecutor", "ToolSpec"]
