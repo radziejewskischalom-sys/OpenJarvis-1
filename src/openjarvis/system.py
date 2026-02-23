@@ -498,65 +498,91 @@ class SystemBuilder:
 
     def _resolve_tools(self, config, engine, model, memory_backend,
                        channel_backend=None):
-        """Resolve tool instances."""
-        tool_names_str = self._tool_names
-        if tool_names_str is None:
-            # Use config default or agent defaults
+        """Resolve tool instances via MCPServer (primary) + external MCP servers."""
+        from openjarvis.mcp.server import MCPServer
+
+        # 1. Build internal MCPServer with all auto-discovered tools
+        internal_server = MCPServer()
+
+        # 2. Inject runtime dependencies into tools that need them
+        for tool in internal_server.get_tools():
+            self._inject_tool_deps(tool, engine, model, memory_backend, channel_backend)
+
+        # 3. Determine which tool names to include
+        tool_names = self._tool_names
+        if tool_names is None:
             raw = config.tools.enabled or config.agent.default_tools
             if raw:
-                tool_names_str = [n.strip() for n in raw.split(",") if n.strip()]
+                tool_names = [n.strip() for n in raw.split(",") if n.strip()]
             else:
-                tool_names_str = []
+                tool_names = []
 
-        tools: List[BaseTool] = []
-        for name in tool_names_str:
+        # 4. Filter to requested tool names (if specified)
+        if tool_names:
+            all_tools = {t.spec.name: t for t in internal_server.get_tools()}
+            tools = [all_tools[n] for n in tool_names if n in all_tools]
+        else:
+            tools = []
+
+        # 5. Discover external MCP server tools
+        if config.tools.mcp.servers:
             try:
-                if name == "retrieval" and memory_backend:
-                    from openjarvis.tools.retrieval import RetrievalTool
-
-                    tools.append(RetrievalTool(memory_backend))
-                elif name == "llm":
-                    from openjarvis.tools.llm_tool import LLMTool
-
-                    tools.append(LLMTool(engine, model=model))
-                elif name in (
-                    "memory_store",
-                    "memory_retrieve",
-                    "memory_search",
-                    "memory_index",
-                ):
-                    from openjarvis.core.registry import ToolRegistry
-                    from openjarvis.tools import storage_tools  # noqa: F401
-
-                    if ToolRegistry.contains(name):
-                        tool = ToolRegistry.create(name, backend=memory_backend)
-                        tools.append(tool)
-                elif name in (
-                    "channel_send",
-                    "channel_list",
-                    "channel_status",
-                ):
-                    import openjarvis.tools.channel_tools  # noqa: F401
-                    from openjarvis.core.registry import ToolRegistry
-
-                    if ToolRegistry.contains(name):
-                        tool = ToolRegistry.create(name, channel=channel_backend)
-                        tools.append(tool)
-                else:
-                    from openjarvis.core.registry import ToolRegistry
-
-                    if ToolRegistry.contains(name):
-                        tools.append(ToolRegistry.create(name))
-                    else:
-                        # Try direct import for tools that need ensure_registered
-                        import openjarvis.tools  # noqa: F401
-
-                        if ToolRegistry.contains(name):
-                            tools.append(ToolRegistry.create(name))
-            except Exception:
+                import json
+                server_list = json.loads(config.tools.mcp.servers)
+                if isinstance(server_list, list):
+                    for server_cfg in server_list:
+                        try:
+                            external_tools = self._discover_external_mcp(server_cfg)
+                            if tool_names:
+                                external_tools = [
+                                    t for t in external_tools
+                                    if t.spec.name in tool_names
+                                ]
+                            tools.extend(external_tools)
+                        except Exception:
+                            pass
+            except (json.JSONDecodeError, TypeError):
                 pass
 
         return tools
+
+    @staticmethod
+    def _inject_tool_deps(tool, engine, model, memory_backend, channel_backend):
+        """Inject runtime dependencies into tools that need them."""
+        name = tool.spec.name
+        if name == "llm":
+            if hasattr(tool, "_engine"):
+                tool._engine = engine
+            if hasattr(tool, "_model"):
+                tool._model = model
+        elif name == "retrieval":
+            if hasattr(tool, "_backend"):
+                tool._backend = memory_backend
+        elif name.startswith("memory_"):
+            if hasattr(tool, "_backend"):
+                tool._backend = memory_backend
+        elif name.startswith("channel_"):
+            if hasattr(tool, "_channel"):
+                tool._channel = channel_backend
+
+    @staticmethod
+    def _discover_external_mcp(server_cfg) -> List[BaseTool]:
+        """Discover tools from an external MCP server configuration."""
+        import json
+
+        from openjarvis.mcp.client import MCPClient
+        from openjarvis.mcp.transport import StdioTransport
+        from openjarvis.tools.mcp_adapter import MCPToolProvider
+
+        cfg = json.loads(server_cfg) if isinstance(server_cfg, str) else server_cfg
+        command = cfg.get("command", "")
+        args = cfg.get("args", [])
+        if not command:
+            return []
+        transport = StdioTransport(command=command, args=args)
+        client = MCPClient(transport)
+        provider = MCPToolProvider(client)
+        return provider.discover()
 
 
 __all__ = ["JarvisSystem", "SystemBuilder"]

@@ -25,7 +25,7 @@ except ImportError:
     DataLoader = None  # type: ignore[assignment,misc]
 
 from openjarvis.core.registry import LearningRegistry
-from openjarvis.learning._stubs import AgentLearningPolicy
+from openjarvis.learning._stubs import IntelligenceLearningPolicy
 
 # ---------------------------------------------------------------------------
 # Config
@@ -377,7 +377,7 @@ def _ensure_registered() -> None:
         return
 
     @LearningRegistry.register("orchestrator_sft")
-    class OrchestratorSFTPolicy(AgentLearningPolicy):
+    class OrchestratorSFTPolicy(IntelligenceLearningPolicy):
         """Wrapper that registers the SFT trainer as a learning policy."""
 
         def update(

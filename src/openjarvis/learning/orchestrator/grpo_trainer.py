@@ -30,7 +30,7 @@ except ImportError:
     F = None  # type: ignore[assignment]
 
 from openjarvis.core.registry import LearningRegistry
-from openjarvis.learning._stubs import AgentLearningPolicy
+from openjarvis.learning._stubs import IntelligenceLearningPolicy
 
 # ---------------------------------------------------------------------------
 # Config
@@ -474,7 +474,7 @@ def _ensure_registered() -> None:
         return
 
     @LearningRegistry.register("orchestrator_grpo")
-    class OrchestratorGRPOPolicy(AgentLearningPolicy):
+    class OrchestratorGRPOPolicy(IntelligenceLearningPolicy):
         """Wrapper that registers the GRPO trainer as a learning policy."""
 
         def update(

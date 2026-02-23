@@ -18,8 +18,6 @@ from openjarvis.engine import (
     get_engine,
 )
 from openjarvis.intelligence import (
-    HeuristicRouter,
-    build_routing_context,
     merge_discovered_models,
     register_builtin_models,
 )
@@ -170,10 +168,6 @@ def _run_agent(
     "--tools", "tool_names", default=None,
     help="Comma-separated tool names to enable (e.g. calculator,think).",
 )
-@click.option(
-    "--router", "router_policy", default=None,
-    help="Router policy for model selection (heuristic, grpo).",
-)
 def ask(
     query: tuple[str, ...],
     model_name: str | None,
@@ -185,7 +179,6 @@ def ask(
     no_context: bool,
     agent_name: str | None,
     tool_names: str | None,
-    router_policy: str | None,
 ) -> None:
     """Ask Jarvis a question."""
     console = Console(stderr=True)
@@ -227,33 +220,19 @@ def ask(
     for ek, model_ids in all_models.items():
         merge_discovered_models(ek, model_ids)
 
-    # Route to model
+    # Resolve model via config fallback chain
     if model_name is None:
-        policy_key = router_policy or config.learning.default_policy
-        from openjarvis.core.registry import RouterPolicyRegistry
-        from openjarvis.learning import ensure_registered as _ensure_learning
-        _ensure_learning()
-
-        if RouterPolicyRegistry.contains(policy_key):
-            router_cls = RouterPolicyRegistry.get(policy_key)
-        else:
-            router_cls = HeuristicRouter  # fallback
-        router = router_cls(
-            available_models=all_models.get(engine_name, []),
-            default_model=config.intelligence.default_model,
-            fallback_model=config.intelligence.fallback_model,
-        )
-        ctx = build_routing_context(query_text)
-        model_name = router.select_model(ctx)
-
+        model_name = config.intelligence.default_model
     if not model_name:
-        # Last resort: pick first available model from the engine
+        # Try first available from engine
         engine_models = all_models.get(engine_name, [])
         if engine_models:
             model_name = engine_models[0]
-        else:
-            console.print("[red]No model available on engine.[/red]")
-            sys.exit(1)
+    if not model_name:
+        model_name = config.intelligence.fallback_model
+    if not model_name:
+        console.print("[red]No model available on engine.[/red]")
+        sys.exit(1)
 
     # Agent mode
     if agent_name is not None:

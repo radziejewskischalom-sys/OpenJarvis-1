@@ -305,41 +305,17 @@ class Jarvis:
         }
 
     def _resolve_model(self, query: str) -> Optional[str]:
-        """Use router policy to select a model."""
+        """Resolve model using config fallback chain."""
+        if self._config.intelligence.default_model:
+            return self._config.intelligence.default_model
+        # Try first available from engine
         try:
-            from openjarvis.core.registry import RouterPolicyRegistry
-            from openjarvis.engine._discovery import discover_engines, discover_models
-            from openjarvis.intelligence import (
-                HeuristicRouter,
-                build_routing_context,
-                merge_discovered_models,
-                register_builtin_models,
-            )
-            from openjarvis.learning import ensure_registered as _ensure_learning
-
-            register_builtin_models()
-            _ensure_learning()
-
-            all_engines = discover_engines(self._config)
-            all_models = discover_models(all_engines)
-            for ek, model_ids in all_models.items():
-                merge_discovered_models(ek, model_ids)
-
-            policy_key = self._config.learning.default_policy
-            if RouterPolicyRegistry.contains(policy_key):
-                router_cls = RouterPolicyRegistry.get(policy_key)
-            else:
-                router_cls = HeuristicRouter
-
-            router = router_cls(
-                available_models=all_models.get(self._resolved_engine_key, []),
-                default_model=self._config.intelligence.default_model,
-                fallback_model=self._config.intelligence.fallback_model,
-            )
-            ctx = build_routing_context(query)
-            return router.select_model(ctx)
+            models = self._engine.list_models()
+            if models:
+                return models[0]
         except Exception:
-            return None
+            pass
+        return self._config.intelligence.fallback_model or None
 
     def _run_agent(
         self,

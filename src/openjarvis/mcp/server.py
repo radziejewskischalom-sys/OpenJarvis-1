@@ -161,6 +161,10 @@ class MCPServer:
 
         return tools
 
+    def get_tools(self) -> List[BaseTool]:
+        """Return all tool instances (for use by SystemBuilder)."""
+        return list(self._tools.values())
+
     def handle(self, request: MCPRequest) -> MCPResponse:
         """Dispatch an MCP request and return a response."""
         if request.method == "initialize":
