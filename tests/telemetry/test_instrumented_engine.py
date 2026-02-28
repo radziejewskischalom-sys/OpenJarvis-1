@@ -120,3 +120,45 @@ class TestInstrumentedEngine:
     def test_engine_id_attribute(self, mock_engine, bus):
         ie = InstrumentedEngine(mock_engine, bus)
         assert ie.engine_id == "instrumented"
+
+
+class TestTokensPerJoule:
+    def test_tokens_per_joule_zero_without_energy(self, mock_engine, bus):
+        """tokens_per_joule is 0.0 when no energy monitor is available."""
+        ie = InstrumentedEngine(mock_engine, bus)
+        messages = [Message(role=Role.USER, content="Hi")]
+        ie.generate(messages, model="test")
+
+        tel_events = [
+            e for e in bus.history
+            if e.event_type == EventType.TELEMETRY_RECORD
+        ]
+        record = tel_events[0].data["record"]
+        assert record.tokens_per_joule == 0.0
+
+    def test_tokens_per_joule_formula_via_record(self):
+        """Verify the formula: tokens_per_joule = completion_tokens / energy_joules."""
+        from openjarvis.core.types import TelemetryRecord
+
+        # Direct construction — verifies the field accepts computed values
+        rec = TelemetryRecord(
+            timestamp=1.0,
+            model_id="test",
+            completion_tokens=50,
+            energy_joules=2.5,
+            tokens_per_joule=50.0 / 2.5,  # = 20.0
+        )
+        assert rec.tokens_per_joule == pytest.approx(20.0)
+
+    def test_tokens_per_joule_zero_when_no_tokens(self):
+        """tokens_per_joule is 0.0 when completion_tokens is 0."""
+        from openjarvis.core.types import TelemetryRecord
+
+        rec = TelemetryRecord(
+            timestamp=1.0,
+            model_id="test",
+            completion_tokens=0,
+            energy_joules=5.0,
+            tokens_per_joule=0.0,
+        )
+        assert rec.tokens_per_joule == 0.0

@@ -173,6 +173,12 @@ class InstrumentedEngine(InferenceEngine):
             if completion_tokens > 0 and decode_latency > 0 else 0.0
         )
 
+        # --- Tier 4: Per-inference efficiency ---
+        tokens_per_joule = (
+            completion_tokens / energy_joules
+            if energy_joules > 0 and completion_tokens > 0 else 0.0
+        )
+
         engine_id = getattr(self._inner, "engine_id", "unknown")
 
         record = TelemetryRecord(
@@ -201,6 +207,7 @@ class InstrumentedEngine(InferenceEngine):
             cpu_energy_joules=cpu_energy_joules,
             gpu_energy_joules=gpu_energy_joules,
             dram_energy_joules=dram_energy_joules,
+            tokens_per_joule=tokens_per_joule,
         )
 
         event_data = {
@@ -364,6 +371,12 @@ class InstrumentedEngine(InferenceEngine):
             prefill_energy = energy_joules * prefill_frac
             decode_energy = energy_joules * (1.0 - prefill_frac)
 
+        # Per-inference efficiency
+        tokens_per_joule = (
+            token_count / energy_joules
+            if energy_joules > 0 and token_count > 0 else 0.0
+        )
+
         engine_id = getattr(self._inner, "engine_id", "unknown")
 
         record = TelemetryRecord(
@@ -397,6 +410,7 @@ class InstrumentedEngine(InferenceEngine):
             cpu_energy_joules=cpu_energy_joules,
             gpu_energy_joules=gpu_energy_joules,
             dram_energy_joules=dram_energy_joules,
+            tokens_per_joule=tokens_per_joule,
         )
 
         event_data = {
