@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, List
+from typing import Any, List, Optional
 
 from openjarvis.evals.core.types import RunConfig, RunSummary
-from openjarvis.optimize.types import TrialConfig, TrialResult
+from openjarvis.optimize.types import SampleScore, TrialConfig, TrialResult
 
 LOGGER = logging.getLogger(__name__)
 
@@ -72,14 +72,16 @@ class TrialRunner:
         )
 
         try:
-            summary: RunSummary = EvalRunner(
+            eval_runner = EvalRunner(
                 run_config, dataset, backend, scorer,
-            ).run()
+            )
+            summary: RunSummary = eval_runner.run()
+            eval_results = eval_runner.results
         finally:
             backend.close()
             judge_backend.close()
 
-        return self._summary_to_result(trial, summary)
+        return self._summary_to_result(trial, summary, eval_results=eval_results)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -112,7 +114,9 @@ class TrialRunner:
 
     @staticmethod
     def _summary_to_result(
-        trial: TrialConfig, summary: RunSummary,
+        trial: TrialConfig,
+        summary: RunSummary,
+        eval_results: Optional[List[Any]] = None,
     ) -> TrialResult:
         """Convert a :class:`RunSummary` to a :class:`TrialResult`."""
         total_tokens = summary.total_input_tokens + summary.total_output_tokens
@@ -120,6 +124,34 @@ class TrialRunner:
         failure_modes: List[str] = []
         if summary.errors > 0:
             failure_modes.append(f"{summary.errors} evaluation errors")
+
+        sample_scores: List[SampleScore] = []
+        if eval_results:
+            for er in eval_results:
+                sample_scores.append(
+                    SampleScore(
+                        record_id=er.record_id,
+                        is_correct=er.is_correct,
+                        score=er.score,
+                        latency_seconds=er.latency_seconds,
+                        prompt_tokens=er.prompt_tokens,
+                        completion_tokens=er.completion_tokens,
+                        cost_usd=er.cost_usd,
+                        error=er.error,
+                        ttft=er.ttft,
+                        energy_joules=er.energy_joules,
+                        power_watts=er.power_watts,
+                        gpu_utilization_pct=er.gpu_utilization_pct,
+                        throughput_tok_per_sec=er.throughput_tok_per_sec,
+                        mfu_pct=er.mfu_pct,
+                        mbu_pct=er.mbu_pct,
+                        ipw=er.ipw,
+                        ipj=er.ipj,
+                        energy_per_output_token_joules=er.energy_per_output_token_joules,
+                        throughput_per_watt=er.throughput_per_watt,
+                        mean_itl_ms=er.mean_itl_ms,
+                    )
+                )
 
         return TrialResult(
             trial_id=trial.trial_id,
@@ -132,6 +164,7 @@ class TrialRunner:
             samples_evaluated=summary.total_samples,
             failure_modes=failure_modes,
             summary=summary,
+            sample_scores=sample_scores,
         )
 
 

@@ -13,9 +13,11 @@ from openjarvis.evals.core.backend import InferenceBackend
 from openjarvis.evals.core.types import RunSummary
 from openjarvis.optimize.llm_optimizer import LLMOptimizer
 from openjarvis.optimize.types import (
+    SampleScore,
     SearchDimension,
     SearchSpace,
     TrialConfig,
+    TrialFeedback,
     TrialResult,
 )
 
@@ -362,7 +364,7 @@ class TestProposeNext:
 class TestAnalyzeTrial:
     """Tests for LLMOptimizer.analyze_trial."""
 
-    def test_returns_analysis_text(self) -> None:
+    def test_returns_trial_feedback(self) -> None:
         backend = _make_mock_backend(
             "The configuration showed strong accuracy at 0.80 "
             "but latency could be improved."
@@ -378,8 +380,8 @@ class TestAnalyzeTrial:
         )
         summary = _make_run_summary()
         result = opt.analyze_trial(trial, summary)
-        assert "accuracy" in result.lower()
-        assert isinstance(result, str)
+        assert isinstance(result, TrialFeedback)
+        assert "accuracy" in result.summary_text.lower()
 
     def test_prompt_contains_config(self) -> None:
         backend = _make_mock_backend("Analysis here.")
@@ -626,6 +628,20 @@ class TestFormatHistory:
         result = opt._format_history([])
         assert result == ""
 
+    def test_marks_frontier_trials(self) -> None:
+        opt = LLMOptimizer(search_space=_make_search_space())
+        history = [
+            _make_trial_result(trial_id="t1"),
+            _make_trial_result(trial_id="t2"),
+        ]
+        result = opt._format_history(history, frontier_ids={"t1"})
+        assert "[FRONTIER]" in result
+        # Only t1 should be marked
+        lines = result.split("\n")
+        frontier_lines = [l for l in lines if "[FRONTIER]" in l]
+        assert len(frontier_lines) == 1
+        assert "t1" in frontier_lines[0]
+
 
 # ---------------------------------------------------------------------------
 # TestFormatTraces
@@ -784,9 +800,10 @@ class TestIntegration:
 
         config = opt.propose_initial()
         summary = _make_run_summary()
-        analysis = opt.analyze_trial(config, summary)
-        assert "orchestrator" in analysis
-        assert "latency" in analysis
+        feedback = opt.analyze_trial(config, summary)
+        assert isinstance(feedback, TrialFeedback)
+        assert "orchestrator" in feedback.summary_text
+        assert "latency" in feedback.summary_text
 
     def test_custom_optimizer_model(self) -> None:
         """Verify custom model is passed to backend."""
@@ -800,3 +817,161 @@ class TestIntegration:
         opt.propose_initial()
         call_kwargs = backend.generate.call_args
         assert call_kwargs.kwargs["model"] == "gpt-4o"
+
+
+# ---------------------------------------------------------------------------
+# TestAnalyzeTrialStructured
+# ---------------------------------------------------------------------------
+
+
+class TestAnalyzeTrialStructured:
+    """Tests for analyze_trial returning TrialFeedback."""
+
+    def test_analyze_trial_returns_trial_feedback(self) -> None:
+        """Mock backend returns structured JSON -> TrialFeedback."""
+        feedback_json = json.dumps({
+            "summary_text": "Good accuracy but high latency",
+            "failure_patterns": ["timeout on complex queries"],
+            "pillar_ratings": {"agent": "high", "intelligence": "medium"},
+            "suggested_changes": ["reduce max_turns"],
+            "target_pillar": "agent",
+        })
+        response = f"```json\n{feedback_json}\n```"
+        backend = _make_mock_backend(response)
+        opt = LLMOptimizer(
+            search_space=_make_search_space(),
+            optimizer_backend=backend,
+        )
+        trial = TrialConfig(trial_id="t1", params={"agent.type": "orchestrator"})
+        summary = _make_run_summary()
+        result = opt.analyze_trial(trial, summary)
+        assert isinstance(result, TrialFeedback)
+        assert result.summary_text == "Good accuracy but high latency"
+        assert result.failure_patterns == ["timeout on complex queries"]
+        assert result.pillar_ratings == {"agent": "high", "intelligence": "medium"}
+        assert result.suggested_changes == ["reduce max_turns"]
+        assert result.target_pillar == "agent"
+
+    def test_analyze_trial_fallback_to_text(self) -> None:
+        """Unparseable response wraps as summary_text."""
+        backend = _make_mock_backend(
+            "The config showed good results overall but could use improvement."
+        )
+        opt = LLMOptimizer(
+            search_space=_make_search_space(),
+            optimizer_backend=backend,
+        )
+        trial = TrialConfig(trial_id="t1", params={})
+        summary = _make_run_summary()
+        result = opt.analyze_trial(trial, summary)
+        assert isinstance(result, TrialFeedback)
+        assert "good results" in result.summary_text
+        assert result.failure_patterns == []
+        assert result.target_pillar == ""
+
+    def test_analyze_trial_with_sample_scores(self) -> None:
+        """Verify sample_scores are included in the prompt."""
+        feedback_json = json.dumps({
+            "summary_text": "Analysis with scores",
+            "failure_patterns": [],
+            "pillar_ratings": {},
+            "suggested_changes": [],
+            "target_pillar": "",
+        })
+        response = f"```json\n{feedback_json}\n```"
+        backend = _make_mock_backend(response)
+        opt = LLMOptimizer(
+            search_space=_make_search_space(),
+            optimizer_backend=backend,
+        )
+        trial = TrialConfig(trial_id="t1", params={})
+        summary = _make_run_summary()
+        scores = [
+            SampleScore(record_id="r1", is_correct=True, latency_seconds=0.5),
+            SampleScore(record_id="r2", is_correct=False, error="timeout"),
+        ]
+        opt.analyze_trial(trial, summary, sample_scores=scores)
+        prompt = backend.generate.call_args.args[0]
+        assert "Per-Sample Scores" in prompt
+        assert "r2" in prompt
+
+
+# ---------------------------------------------------------------------------
+# TestProposeTargeted
+# ---------------------------------------------------------------------------
+
+
+class TestProposeTargeted:
+    """Tests for LLMOptimizer.propose_targeted."""
+
+    def test_preserves_non_target_params(self) -> None:
+        response = json.dumps({
+            "params": {
+                "agent.type": "native_react",
+                "agent.max_turns": 20,
+                "intelligence.temperature": 0.9,
+            },
+            "reasoning": "Change agent only",
+        })
+        response = f"```json\n{response}\n```"
+        backend = _make_mock_backend(response)
+        opt = LLMOptimizer(
+            search_space=_make_search_space(),
+            optimizer_backend=backend,
+        )
+        base_config = TrialConfig(
+            trial_id="base",
+            params={
+                "agent.type": "orchestrator",
+                "agent.max_turns": 10,
+                "intelligence.temperature": 0.5,
+            },
+        )
+        result = opt.propose_targeted([], base_config, "agent")
+        # Agent params should be updated
+        assert result.params["agent.type"] == "native_react"
+        assert result.params["agent.max_turns"] == 20
+        # Non-target params should be preserved from base
+        assert result.params["intelligence.temperature"] == 0.5
+
+    def test_prompt_mentions_target_pillar(self) -> None:
+        response = '```json\n{"params": {}, "reasoning": "ok"}\n```'
+        backend = _make_mock_backend(response)
+        opt = LLMOptimizer(
+            search_space=_make_search_space(),
+            optimizer_backend=backend,
+        )
+        base_config = TrialConfig(trial_id="base", params={})
+        opt.propose_targeted([], base_config, "intelligence")
+        prompt = backend.generate.call_args.args[0]
+        assert "intelligence" in prompt
+        assert "ONLY change" in prompt
+
+
+# ---------------------------------------------------------------------------
+# TestProposeMerge
+# ---------------------------------------------------------------------------
+
+
+class TestProposeMerge:
+    """Tests for LLMOptimizer.propose_merge."""
+
+    def test_includes_candidates_in_prompt(self) -> None:
+        response = '```json\n{"params": {"agent.type": "orchestrator"}, "reasoning": "merged"}\n```'
+        backend = _make_mock_backend(response)
+        opt = LLMOptimizer(
+            search_space=_make_search_space(),
+            optimizer_backend=backend,
+        )
+        candidates = [
+            _make_trial_result(trial_id="c1", accuracy=0.9),
+            _make_trial_result(trial_id="c2", accuracy=0.7),
+        ]
+        result = opt.propose_merge(candidates, [])
+        assert isinstance(result, TrialConfig)
+        prompt = backend.generate.call_args.args[0]
+        assert "Candidate 1" in prompt
+        assert "Candidate 2" in prompt
+        assert "c1" in prompt
+        assert "c2" in prompt
+        assert "Merge" in prompt or "merge" in prompt

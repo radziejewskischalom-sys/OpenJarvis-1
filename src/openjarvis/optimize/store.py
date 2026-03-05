@@ -10,8 +10,10 @@ from typing import Any, Dict, List, Optional, Union
 
 from openjarvis.optimize.types import (
     OptimizationRun,
+    SampleScore,
     SearchSpace,
     TrialConfig,
+    TrialFeedback,
     TrialResult,
 )
 
@@ -67,6 +69,19 @@ INSERT OR REPLACE INTO trial_results (
 """
 
 
+_MIGRATE_TRIALS = [
+    "ALTER TABLE trial_results ADD COLUMN "
+    "sample_scores TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE trial_results ADD COLUMN "
+    "structured_feedback TEXT NOT NULL DEFAULT '{}'",
+]
+
+_MIGRATE_RUNS = [
+    "ALTER TABLE optimization_runs ADD COLUMN "
+    "pareto_frontier_ids TEXT NOT NULL DEFAULT '[]'",
+]
+
+
 class OptimizationStore:
     """SQLite-backed storage for optimization runs and trials."""
 
@@ -76,6 +91,16 @@ class OptimizationStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute(_CREATE_RUNS)
         self._conn.execute(_CREATE_TRIALS)
+        self._conn.commit()
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Add new columns to existing databases gracefully."""
+        for stmt in _MIGRATE_TRIALS + _MIGRATE_RUNS:
+            try:
+                self._conn.execute(stmt)
+            except sqlite3.OperationalError:
+                pass  # Column already exists
         self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -87,6 +112,7 @@ class OptimizationStore:
         now = time.time()
         search_space_json = self._search_space_to_json(run.search_space)
         best_trial_id = run.best_trial.trial_id if run.best_trial else None
+        pareto_ids = json.dumps([t.trial_id for t in run.pareto_frontier])
         self._conn.execute(
             _INSERT_RUN,
             (
@@ -100,6 +126,11 @@ class OptimizationStore:
                 now,
                 now,
             ),
+        )
+        # Update pareto_frontier_ids separately (not in original INSERT)
+        self._conn.execute(
+            "UPDATE optimization_runs SET pareto_frontier_ids = ? WHERE run_id = ?",
+            (pareto_ids, run.run_id),
         )
         self._conn.commit()
 
@@ -142,6 +173,42 @@ class OptimizationStore:
     def save_trial(self, run_id: str, trial: TrialResult) -> None:
         """Persist a single trial result."""
         now = time.time()
+        # Serialize sample_scores
+        scores_json = json.dumps([
+            {
+                "record_id": s.record_id,
+                "is_correct": s.is_correct,
+                "score": s.score,
+                "latency_seconds": s.latency_seconds,
+                "prompt_tokens": s.prompt_tokens,
+                "completion_tokens": s.completion_tokens,
+                "cost_usd": s.cost_usd,
+                "error": s.error,
+                "ttft": s.ttft,
+                "energy_joules": s.energy_joules,
+                "power_watts": s.power_watts,
+                "gpu_utilization_pct": s.gpu_utilization_pct,
+                "throughput_tok_per_sec": s.throughput_tok_per_sec,
+                "mfu_pct": s.mfu_pct,
+                "mbu_pct": s.mbu_pct,
+                "ipw": s.ipw,
+                "ipj": s.ipj,
+                "energy_per_output_token_joules": s.energy_per_output_token_joules,
+                "throughput_per_watt": s.throughput_per_watt,
+                "mean_itl_ms": s.mean_itl_ms,
+            }
+            for s in trial.sample_scores
+        ])
+        # Serialize structured_feedback
+        fb = trial.structured_feedback
+        fb_json = json.dumps({
+            "summary_text": fb.summary_text,
+            "failure_patterns": fb.failure_patterns,
+            "pillar_ratings": fb.pillar_ratings,
+            "suggested_changes": fb.suggested_changes,
+            "target_pillar": fb.target_pillar,
+        }) if fb else "{}"
+
         self._conn.execute(
             _INSERT_TRIAL,
             (
@@ -159,6 +226,12 @@ class OptimizationStore:
                 json.dumps(trial.failure_modes),
                 now,
             ),
+        )
+        # Update new columns separately
+        self._conn.execute(
+            "UPDATE trial_results SET sample_scores = ?, structured_feedback = ? "
+            "WHERE trial_id = ? AND run_id = ?",
+            (scores_json, fb_json, trial.trial_id, run_id),
         )
         self._conn.commit()
 
@@ -252,6 +325,18 @@ class OptimizationStore:
                     best_trial = t
                     break
 
+        # Reconstruct pareto frontier from IDs
+        pareto_frontier: List[TrialResult] = []
+        if len(row) > 10:
+            try:
+                frontier_ids = json.loads(row[10]) if row[10] else []
+                trial_map = {t.trial_id: t for t in trials}
+                pareto_frontier = [
+                    trial_map[tid] for tid in frontier_ids if tid in trial_map
+                ]
+            except (json.JSONDecodeError, TypeError):
+                pass
+
         return OptimizationRun(
             run_id=run_id,
             search_space=search_space,
@@ -261,6 +346,7 @@ class OptimizationStore:
             status=status,
             optimizer_model=optimizer_model,
             benchmark=benchmark,
+            pareto_frontier=pareto_frontier,
         )
 
     @staticmethod
@@ -278,6 +364,58 @@ class OptimizationStore:
         samples = row[10]
         analysis = row[11]
         failure_modes = json.loads(row[12])
+        # row[13] = created_at
+
+        # New columns (may be absent in old DBs)
+        sample_scores: List[SampleScore] = []
+        structured_feedback: Optional[TrialFeedback] = None
+
+        if len(row) > 14:
+            try:
+                raw_scores = json.loads(row[14]) if row[14] else []
+                sample_scores = [
+                    SampleScore(
+                        record_id=s.get("record_id", ""),
+                        is_correct=s.get("is_correct"),
+                        score=s.get("score"),
+                        latency_seconds=s.get("latency_seconds", 0.0),
+                        prompt_tokens=s.get("prompt_tokens", 0),
+                        completion_tokens=s.get("completion_tokens", 0),
+                        cost_usd=s.get("cost_usd", 0.0),
+                        error=s.get("error"),
+                        ttft=s.get("ttft", 0.0),
+                        energy_joules=s.get("energy_joules", 0.0),
+                        power_watts=s.get("power_watts", 0.0),
+                        gpu_utilization_pct=s.get("gpu_utilization_pct", 0.0),
+                        throughput_tok_per_sec=s.get("throughput_tok_per_sec", 0.0),
+                        mfu_pct=s.get("mfu_pct", 0.0),
+                        mbu_pct=s.get("mbu_pct", 0.0),
+                        ipw=s.get("ipw", 0.0),
+                        ipj=s.get("ipj", 0.0),
+                        energy_per_output_token_joules=s.get(
+                            "energy_per_output_token_joules", 0.0,
+                        ),
+                        throughput_per_watt=s.get("throughput_per_watt", 0.0),
+                        mean_itl_ms=s.get("mean_itl_ms", 0.0),
+                    )
+                    for s in raw_scores
+                ]
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        if len(row) > 15:
+            try:
+                raw_fb = json.loads(row[15]) if row[15] else {}
+                if raw_fb and raw_fb.get("summary_text", "") != "":
+                    structured_feedback = TrialFeedback(
+                        summary_text=raw_fb.get("summary_text", ""),
+                        failure_patterns=raw_fb.get("failure_patterns", []),
+                        pillar_ratings=raw_fb.get("pillar_ratings", {}),
+                        suggested_changes=raw_fb.get("suggested_changes", []),
+                        target_pillar=raw_fb.get("target_pillar", ""),
+                    )
+            except (json.JSONDecodeError, TypeError):
+                pass
 
         config = TrialConfig(
             trial_id=trial_id,
@@ -295,6 +433,8 @@ class OptimizationStore:
             samples_evaluated=samples,
             analysis=analysis,
             failure_modes=failure_modes,
+            sample_scores=sample_scores,
+            structured_feedback=structured_feedback,
         )
 
 

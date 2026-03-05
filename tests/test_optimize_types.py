@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from openjarvis.optimize.types import (
+    ObjectiveSpec,
     OptimizationRun,
+    SampleScore,
     SearchDimension,
     SearchSpace,
     TrialConfig,
+    TrialFeedback,
     TrialResult,
 )
 from openjarvis.recipes.loader import Recipe
@@ -382,6 +385,8 @@ class TestTrialResult:
         assert result.failure_modes == []
         assert result.per_sample_feedback == []
         assert result.summary is None
+        assert result.sample_scores == []
+        assert result.structured_feedback is None
 
     def test_creation_with_values(self) -> None:
         config = TrialConfig(
@@ -446,6 +451,8 @@ class TestOptimizationRun:
         assert run.status == "running"
         assert run.optimizer_model == ""
         assert run.benchmark == ""
+        assert run.pareto_frontier == []
+        assert len(run.objectives) == 3  # DEFAULT_OBJECTIVES
 
     def test_creation_with_values(self) -> None:
         space = SearchSpace()
@@ -486,3 +493,85 @@ class TestOptimizationRun:
             ),
         )
         assert r2.trials == []
+
+
+# ---------------------------------------------------------------------------
+# SampleScore
+# ---------------------------------------------------------------------------
+
+
+class TestSampleScore:
+    """Tests for SampleScore dataclass."""
+
+    def test_creation(self) -> None:
+        ss = SampleScore(
+            record_id="r1",
+            is_correct=True,
+            score=1.0,
+            latency_seconds=0.5,
+        )
+        assert ss.record_id == "r1"
+        assert ss.is_correct is True
+        assert ss.score == 1.0
+        assert ss.latency_seconds == 0.5
+
+    def test_defaults(self) -> None:
+        ss = SampleScore(record_id="r0")
+        assert ss.record_id == "r0"
+        assert ss.is_correct is None
+        assert ss.score is None
+        assert ss.latency_seconds == 0.0
+        assert ss.prompt_tokens == 0
+        assert ss.completion_tokens == 0
+        assert ss.cost_usd == 0.0
+        assert ss.error is None
+        assert ss.ttft == 0.0
+        assert ss.energy_joules == 0.0
+        assert ss.power_watts == 0.0
+        assert ss.gpu_utilization_pct == 0.0
+        assert ss.throughput_tok_per_sec == 0.0
+        assert ss.mfu_pct == 0.0
+        assert ss.mbu_pct == 0.0
+        assert ss.ipw == 0.0
+        assert ss.ipj == 0.0
+        assert ss.energy_per_output_token_joules == 0.0
+        assert ss.throughput_per_watt == 0.0
+        assert ss.mean_itl_ms == 0.0
+
+
+# ---------------------------------------------------------------------------
+# TrialFeedback
+# ---------------------------------------------------------------------------
+
+
+class TestTrialFeedback:
+    """Tests for TrialFeedback dataclass."""
+
+    def test_creation(self) -> None:
+        fb = TrialFeedback(
+            summary_text="Trial showed strong accuracy but high latency.",
+            failure_patterns=["timeout on long inputs", "hallucination"],
+            pillar_ratings={"intelligence": "good", "agent": "needs work"},
+            suggested_changes=["lower temperature", "increase max_turns"],
+            target_pillar="agent",
+        )
+        assert fb.summary_text == "Trial showed strong accuracy but high latency."
+        assert fb.failure_patterns == ["timeout on long inputs", "hallucination"]
+        assert fb.pillar_ratings == {"intelligence": "good", "agent": "needs work"}
+        assert fb.suggested_changes == ["lower temperature", "increase max_turns"]
+        assert fb.target_pillar == "agent"
+
+    def test_defaults(self) -> None:
+        fb = TrialFeedback()
+        assert fb.summary_text == ""
+        assert fb.failure_patterns == []
+        assert fb.pillar_ratings == {}
+        assert fb.suggested_changes == []
+        assert fb.target_pillar == ""
+
+    def test_mutable_isolation(self) -> None:
+        """Ensure mutable defaults are independent across instances."""
+        fb1 = TrialFeedback()
+        fb2 = TrialFeedback()
+        fb1.failure_patterns.append("error")
+        assert fb2.failure_patterns == []

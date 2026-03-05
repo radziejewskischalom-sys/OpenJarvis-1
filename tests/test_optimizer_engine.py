@@ -18,6 +18,7 @@ from openjarvis.optimize.types import (
     SearchDimension,
     SearchSpace,
     TrialConfig,
+    TrialFeedback,
     TrialResult,
 )
 
@@ -146,7 +147,7 @@ class TestOptimizationEngineRun:
         )
         optimizer.propose_initial.return_value = initial_config
         optimizer.propose_next.return_value = second_config
-        optimizer.analyze_trial.return_value = "analysis text"
+        optimizer.analyze_trial.return_value = TrialFeedback(summary_text="analysis text")
         optimizer.optimizer_model = "test-model"
 
         runner.run_trial.return_value = _sample_trial_result(
@@ -187,7 +188,7 @@ class TestOptimizationEngineRun:
 
         config = TrialConfig(trial_id="only", params={})
         optimizer.propose_initial.return_value = config
-        optimizer.analyze_trial.return_value = "good"
+        optimizer.analyze_trial.return_value = TrialFeedback(summary_text="good")
         optimizer.optimizer_model = "m"
         runner.run_trial.return_value = _sample_trial_result("only", 0.9)
         runner.benchmark = "test"
@@ -212,7 +213,7 @@ class TestOptimizationEngineRun:
         optimizer.propose_initial.return_value = TrialConfig(
             trial_id="t1", params={},
         )
-        optimizer.analyze_trial.return_value = "detailed analysis"
+        optimizer.analyze_trial.return_value = TrialFeedback(summary_text="detailed analysis")
         optimizer.optimizer_model = "m"
         runner.run_trial.return_value = _sample_trial_result("t1", 0.8)
         runner.benchmark = "b"
@@ -278,7 +279,7 @@ class TestEarlyStopping:
             TrialConfig(trial_id=f"t{i}", params={})
             for i in range(1, 20)
         ]
-        optimizer.analyze_trial.return_value = "ok"
+        optimizer.analyze_trial.return_value = TrialFeedback(summary_text="ok")
         optimizer.optimizer_model = "m"
         runner.benchmark = "b"
 
@@ -313,7 +314,7 @@ class TestEarlyStopping:
             TrialConfig(trial_id=f"t{i}", params={})
             for i in range(1, 5)
         ]
-        optimizer.analyze_trial.return_value = "ok"
+        optimizer.analyze_trial.return_value = TrialFeedback(summary_text="ok")
         optimizer.optimizer_model = "m"
         runner.benchmark = "b"
 
@@ -359,7 +360,7 @@ class TestProgressCallback:
             TrialConfig(trial_id=f"t{i}", params={})
             for i in range(1, 3)
         ]
-        optimizer.analyze_trial.return_value = "ok"
+        optimizer.analyze_trial.return_value = TrialFeedback(summary_text="ok")
         optimizer.optimizer_model = "m"
         runner.benchmark = "b"
 
@@ -392,7 +393,7 @@ class TestProgressCallback:
         optimizer.propose_initial.return_value = TrialConfig(
             trial_id="t0", params={},
         )
-        optimizer.analyze_trial.return_value = "ok"
+        optimizer.analyze_trial.return_value = TrialFeedback(summary_text="ok")
         optimizer.optimizer_model = "m"
         runner.run_trial.return_value = _sample_trial_result("t0", 0.8)
         runner.benchmark = "b"
@@ -545,7 +546,7 @@ class TestRunWithStore:
         optimizer.propose_next.return_value = TrialConfig(
             trial_id="t1", params={},
         )
-        optimizer.analyze_trial.return_value = "analysis"
+        optimizer.analyze_trial.return_value = TrialFeedback(summary_text="analysis")
         optimizer.optimizer_model = "m"
         runner.benchmark = "b"
 
@@ -582,7 +583,7 @@ class TestRunWithStore:
         optimizer.propose_initial.return_value = TrialConfig(
             trial_id="t0", params={},
         )
-        optimizer.analyze_trial.return_value = "ok"
+        optimizer.analyze_trial.return_value = TrialFeedback(summary_text="ok")
         optimizer.optimizer_model = "m"
         runner.run_trial.return_value = _sample_trial_result("t0", 0.8)
         runner.benchmark = "b"
@@ -648,3 +649,137 @@ engine = "ollama"
 
         config = load_optimize_config(str(path))
         assert config["optimize"]["max_trials"] == 5
+
+
+class TestParetoFrontier:
+    """Tests for Pareto frontier in the run loop."""
+
+    def test_pareto_frontier_populated_after_run(self) -> None:
+        optimizer = MagicMock()
+        runner = MagicMock()
+
+        optimizer.propose_initial.return_value = TrialConfig(
+            trial_id="t0", params={},
+        )
+        optimizer.propose_next.return_value = TrialConfig(
+            trial_id="t1", params={},
+        )
+        # analyze_trial returns TrialFeedback
+        optimizer.analyze_trial.return_value = TrialFeedback(
+            summary_text="analysis",
+        )
+        optimizer.optimizer_model = "m"
+        runner.benchmark = "b"
+
+        runner.run_trial.side_effect = [
+            _sample_trial_result("t0", accuracy=0.8),
+            _sample_trial_result("t1", accuracy=0.9),
+        ]
+
+        engine = OptimizationEngine(
+            search_space=_sample_search_space(),
+            llm_optimizer=optimizer,
+            trial_runner=runner,
+            max_trials=2,
+        )
+        run = engine.run()
+
+        assert len(run.pareto_frontier) > 0
+        # The better trial should be on the frontier
+        frontier_ids = {t.trial_id for t in run.pareto_frontier}
+        assert "t1" in frontier_ids
+
+
+class TestTargetedAndMerge:
+    """Tests for targeted mutation and merge in the run loop."""
+
+    def test_targeted_proposal_used_when_target_pillar_set(self) -> None:
+        optimizer = MagicMock()
+        runner = MagicMock()
+
+        configs = [
+            TrialConfig(trial_id=f"t{i}", params={})
+            for i in range(5)
+        ]
+        optimizer.propose_initial.return_value = configs[0]
+        optimizer.propose_next.side_effect = configs[1:]
+        optimizer.propose_targeted.return_value = configs[3]
+        optimizer.optimizer_model = "m"
+        runner.benchmark = "b"
+
+        # Trials 0-2: normal. Trial 2 feedback has target_pillar
+        fb_normal = TrialFeedback(summary_text="ok")
+        fb_targeted = TrialFeedback(
+            summary_text="agent needs tuning",
+            target_pillar="agent",
+        )
+
+        optimizer.analyze_trial.side_effect = [
+            fb_normal,   # trial 0
+            fb_normal,   # trial 1
+            fb_targeted, # trial 2 -> will trigger targeted on next
+            fb_normal,   # trial 3
+        ]
+
+        results = [
+            _sample_trial_result(f"t{i}", accuracy=0.5 + i * 0.05)
+            for i in range(4)
+        ]
+        runner.run_trial.side_effect = results
+
+        engine = OptimizationEngine(
+            search_space=_sample_search_space(),
+            llm_optimizer=optimizer,
+            trial_runner=runner,
+            max_trials=4,
+        )
+        run = engine.run()
+
+        # After trial 2 (trial_num=3, > 2), targeted should be used
+        assert optimizer.propose_targeted.called
+
+    def test_merge_triggered_periodically(self) -> None:
+        optimizer = MagicMock()
+        runner = MagicMock()
+
+        configs = [
+            TrialConfig(trial_id=f"t{i}", params={})
+            for i in range(7)
+        ]
+        optimizer.propose_initial.return_value = configs[0]
+        optimizer.propose_next.side_effect = configs[1:]
+        optimizer.propose_merge.return_value = configs[5]
+        optimizer.optimizer_model = "m"
+        runner.benchmark = "b"
+
+        fb = TrialFeedback(summary_text="ok")
+        optimizer.analyze_trial.return_value = fb
+
+        # Create diverse results with genuine tradeoffs so
+        # frontier has >= 2 members (high acc/high lat vs low acc/low lat)
+        tradeoffs = [
+            (0.9, 3.0, 0.05),   # t0: high accuracy, high latency, high cost
+            (0.5, 0.5, 0.01),   # t1: low accuracy, low latency, low cost
+            (0.7, 1.5, 0.03),   # t2: dominated by t0+t1 combo
+            (0.85, 2.5, 0.04),  # t3: close to t0 tradeoff
+            (0.6, 0.8, 0.015),  # t4: close to t1 tradeoff
+            (0.75, 1.0, 0.02),  # t5: merged result
+        ]
+        results = []
+        for i, (acc, lat, cost) in enumerate(tradeoffs):
+            r = _sample_trial_result(f"t{i}", accuracy=acc)
+            r.mean_latency_seconds = lat
+            r.total_cost_usd = cost
+            results.append(r)
+        runner.run_trial.side_effect = results
+
+        engine = OptimizationEngine(
+            search_space=_sample_search_space(),
+            llm_optimizer=optimizer,
+            trial_runner=runner,
+            max_trials=6,
+        )
+        run = engine.run()
+
+        # Merge should be triggered at trial_num=5
+        assert optimizer.propose_merge.called

@@ -338,3 +338,60 @@ class TestRunTrial:
 
         mock_backend.close.assert_called_once()
         mock_judge.close.assert_called_once()
+
+    @patch("openjarvis.evals.cli._build_scorer")
+    @patch("openjarvis.evals.cli._build_judge_backend")
+    @patch("openjarvis.evals.cli._build_dataset")
+    @patch("openjarvis.evals.cli._build_backend")
+    @patch("openjarvis.evals.core.runner.EvalRunner")
+    def test_run_trial_populates_sample_scores(
+        self, mock_runner_cls, mock_build_backend, mock_build_dataset,
+        mock_build_judge, mock_build_scorer,
+    ) -> None:
+        from openjarvis.evals.core.types import EvalResult
+
+        summary = self._make_summary()
+        mock_runner_instance = MagicMock()
+        mock_runner_instance.run.return_value = summary
+        # Mock the results property to return sample-level results
+        mock_runner_instance.results = [
+            EvalResult(
+                record_id="r1",
+                model_answer="42",
+                is_correct=True,
+                score=1.0,
+                latency_seconds=0.5,
+                prompt_tokens=100,
+                completion_tokens=50,
+                cost_usd=0.001,
+            ),
+            EvalResult(
+                record_id="r2",
+                model_answer="wrong",
+                is_correct=False,
+                score=0.0,
+                latency_seconds=1.2,
+                prompt_tokens=120,
+                completion_tokens=60,
+                cost_usd=0.002,
+                error="parse error",
+            ),
+        ]
+        mock_runner_cls.return_value = mock_runner_instance
+        mock_build_backend.return_value = MagicMock()
+        mock_build_judge.return_value = MagicMock()
+
+        runner = TrialRunner(benchmark="supergpqa", max_samples=50)
+        trial = TrialConfig(
+            trial_id="t-scores",
+            params={"intelligence.model": "qwen3:8b"},
+        )
+        result = runner.run_trial(trial)
+
+        assert len(result.sample_scores) == 2
+        assert result.sample_scores[0].record_id == "r1"
+        assert result.sample_scores[0].is_correct is True
+        assert result.sample_scores[0].latency_seconds == 0.5
+        assert result.sample_scores[1].record_id == "r2"
+        assert result.sample_scores[1].is_correct is False
+        assert result.sample_scores[1].error == "parse error"

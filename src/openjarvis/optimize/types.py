@@ -88,6 +88,76 @@ _PARAM_TO_RECIPE: Dict[str, str] = {
 
 
 @dataclass(slots=True)
+class SampleScore:
+    """Per-sample metrics from an evaluation trial."""
+
+    record_id: str
+    is_correct: Optional[bool] = None
+    score: Optional[float] = None
+    latency_seconds: float = 0.0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost_usd: float = 0.0
+    error: Optional[str] = None
+    ttft: float = 0.0
+    energy_joules: float = 0.0
+    power_watts: float = 0.0
+    gpu_utilization_pct: float = 0.0
+    throughput_tok_per_sec: float = 0.0
+    mfu_pct: float = 0.0
+    mbu_pct: float = 0.0
+    ipw: float = 0.0
+    ipj: float = 0.0
+    energy_per_output_token_joules: float = 0.0
+    throughput_per_watt: float = 0.0
+    mean_itl_ms: float = 0.0
+
+
+@dataclass(slots=True)
+class TrialFeedback:
+    """Structured feedback from trial analysis."""
+
+    summary_text: str = ""
+    failure_patterns: List[str] = field(default_factory=list)
+    pillar_ratings: Dict[str, str] = field(default_factory=dict)
+    suggested_changes: List[str] = field(default_factory=list)
+    target_pillar: str = ""
+
+
+@dataclass(slots=True)
+class ObjectiveSpec:
+    """A single optimization objective."""
+
+    metric: str
+    direction: str  # "maximize" or "minimize"
+    weight: float = 1.0
+
+
+DEFAULT_OBJECTIVES = [
+    ObjectiveSpec("accuracy", "maximize"),
+    ObjectiveSpec("mean_latency_seconds", "minimize"),
+    ObjectiveSpec("total_cost_usd", "minimize"),
+]
+
+ALL_OBJECTIVES = [
+    ObjectiveSpec("accuracy", "maximize"),
+    ObjectiveSpec("mean_latency_seconds", "minimize"),
+    ObjectiveSpec("total_cost_usd", "minimize"),
+    ObjectiveSpec("total_energy_joules", "minimize"),
+    ObjectiveSpec("avg_power_watts", "minimize"),
+    ObjectiveSpec("throughput_tok_per_sec", "maximize"),
+    ObjectiveSpec("mfu_pct", "maximize"),
+    ObjectiveSpec("mbu_pct", "maximize"),
+    ObjectiveSpec("ipw", "maximize"),
+    ObjectiveSpec("ipj", "maximize"),
+    ObjectiveSpec("energy_per_output_token", "minimize"),
+    ObjectiveSpec("throughput_per_watt", "maximize"),
+    ObjectiveSpec("ttft", "minimize"),
+    ObjectiveSpec("mean_itl_ms", "minimize"),
+]
+
+
+@dataclass(slots=True)
 class TrialConfig:
     """A single candidate configuration proposed by the optimizer."""
 
@@ -125,6 +195,8 @@ class TrialResult:
     failure_modes: List[str] = field(default_factory=list)
     per_sample_feedback: List[Dict[str, Any]] = field(default_factory=list)
     summary: Optional[RunSummary] = None
+    sample_scores: List[SampleScore] = field(default_factory=list)
+    structured_feedback: Optional[TrialFeedback] = None
 
 
 @dataclass(slots=True)
@@ -139,12 +211,21 @@ class OptimizationRun:
     status: str = "running"  # running | completed | failed
     optimizer_model: str = ""
     benchmark: str = ""
+    pareto_frontier: List[TrialResult] = field(default_factory=list)
+    objectives: List[ObjectiveSpec] = field(
+        default_factory=lambda: list(DEFAULT_OBJECTIVES),
+    )
 
 
 __all__ = [
+    "ALL_OBJECTIVES",
+    "DEFAULT_OBJECTIVES",
+    "ObjectiveSpec",
+    "OptimizationRun",
+    "SampleScore",
     "SearchDimension",
     "SearchSpace",
     "TrialConfig",
+    "TrialFeedback",
     "TrialResult",
-    "OptimizationRun",
 ]

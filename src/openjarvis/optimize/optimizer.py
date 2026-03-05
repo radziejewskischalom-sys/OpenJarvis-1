@@ -20,12 +20,99 @@ from openjarvis.optimize.llm_optimizer import LLMOptimizer
 from openjarvis.optimize.store import OptimizationStore
 from openjarvis.optimize.trial_runner import TrialRunner
 from openjarvis.optimize.types import (
+    ObjectiveSpec,
     OptimizationRun,
     SearchSpace,
     TrialResult,
 )
 
 LOGGER = logging.getLogger(__name__)
+
+# Mapping from objective metric names to RunSummary stat attribute + ".mean"
+_SUMMARY_STAT_MAP: Dict[str, str] = {
+    "avg_power_watts": "avg_power_watts",
+    "throughput_tok_per_sec": "throughput_stats",
+    "mfu_pct": "mfu_stats",
+    "mbu_pct": "mbu_stats",
+    "ipw": "ipw_stats",
+    "ipj": "ipj_stats",
+    "energy_per_output_token": "energy_per_output_token_stats",
+    "throughput_per_watt": "throughput_per_watt_stats",
+    "ttft": "ttft_stats",
+    "mean_itl_ms": "itl_stats",
+}
+
+
+def _get_objective_value(trial: TrialResult, obj: ObjectiveSpec) -> float:
+    """Read the metric value from a TrialResult for a given objective."""
+    # Direct attributes on TrialResult
+    direct = {
+        "accuracy", "mean_latency_seconds",
+        "total_cost_usd", "total_energy_joules",
+    }
+    if obj.metric in direct:
+        return getattr(trial, obj.metric, 0.0)
+
+    # avg_power_watts is a direct attr on RunSummary
+    if obj.metric == "avg_power_watts" and trial.summary:
+        return trial.summary.avg_power_watts
+
+    # Stats-based metrics from RunSummary
+    stat_attr = _SUMMARY_STAT_MAP.get(obj.metric)
+    if stat_attr and trial.summary:
+        stats = getattr(trial.summary, stat_attr, None)
+        if stats is not None and hasattr(stats, "mean"):
+            return stats.mean
+
+    return 0.0
+
+
+def compute_pareto_frontier(
+    trials: List[TrialResult],
+    objectives: List[ObjectiveSpec],
+) -> List[TrialResult]:
+    """Compute the Pareto frontier: trials not dominated by any other.
+
+    A trial A dominates trial B if A is >= B on all objectives and > B
+    on at least one (direction-aware: maximize flips the comparison).
+    """
+    if not trials or not objectives:
+        return list(trials)
+
+    def _values(trial: TrialResult) -> List[float]:
+        vals = []
+        for obj in objectives:
+            v = _get_objective_value(trial, obj)
+            # Normalize: for "minimize", negate so higher is always better
+            if obj.direction == "minimize":
+                v = -v
+            vals.append(v)
+        return vals
+
+    trial_vals = [_values(t) for t in trials]
+    frontier: List[TrialResult] = []
+
+    for i, trial in enumerate(trials):
+        dominated = False
+        for j, other in enumerate(trials):
+            if i == j:
+                continue
+            # Check if other dominates trial
+            all_ge = all(
+                trial_vals[j][k] >= trial_vals[i][k]
+                for k in range(len(objectives))
+            )
+            any_gt = any(
+                trial_vals[j][k] > trial_vals[i][k]
+                for k in range(len(objectives))
+            )
+            if all_ge and any_gt:
+                dominated = True
+                break
+        if not dominated:
+            frontier.append(trial)
+
+    return frontier
 
 
 class OptimizationEngine:
@@ -103,19 +190,27 @@ class OptimizationEngine:
             # Evaluate
             result = self.trial_runner.run_trial(config)
 
-            # Analyze
+            # Analyze — returns TrialFeedback
             if result.summary is not None:
-                analysis = self.llm_optimizer.analyze_trial(
+                feedback = self.llm_optimizer.analyze_trial(
                     config,
                     result.summary,
+                    sample_scores=result.sample_scores or None,
                 )
+                result.structured_feedback = feedback
+                result.analysis = feedback.summary_text
             else:
-                analysis = ""
-            result.analysis = analysis
+                result.analysis = ""
 
             # Record
             history.append(result)
             optimization_run.trials.append(result)
+
+            # Recompute Pareto frontier
+            optimization_run.pareto_frontier = compute_pareto_frontier(
+                history, optimization_run.objectives,
+            )
+            frontier_ids = {t.trial_id for t in optimization_run.pareto_frontier}
 
             # Persist trial
             if self.store is not None:
@@ -143,7 +238,32 @@ class OptimizationEngine:
 
             # Propose next (unless this was the last trial)
             if trial_num < self.max_trials:
-                config = self.llm_optimizer.propose_next(history)
+                # Decide proposal strategy
+                target_pillar = ""
+                if result.structured_feedback:
+                    target_pillar = result.structured_feedback.target_pillar
+
+                if (
+                    trial_num % 5 == 0
+                    and len(optimization_run.pareto_frontier) >= 2
+                ):
+                    # Merge frontier members periodically
+                    candidates = optimization_run.pareto_frontier[:3]
+                    config = self.llm_optimizer.propose_merge(
+                        candidates, history, frontier_ids=frontier_ids,
+                    )
+                elif target_pillar and trial_num > 2:
+                    # Targeted mutation on the suggested pillar
+                    config = self.llm_optimizer.propose_targeted(
+                        history,
+                        result.config,
+                        target_pillar,
+                        frontier_ids=frontier_ids,
+                    )
+                else:
+                    config = self.llm_optimizer.propose_next(
+                        history, frontier_ids=frontier_ids,
+                    )
 
         optimization_run.status = "completed"
 
@@ -279,4 +399,4 @@ class OptimizationEngine:
         path.write_text("\n".join(lines), encoding="utf-8")
 
 
-__all__ = ["OptimizationEngine"]
+__all__ = ["OptimizationEngine", "compute_pareto_frontier"]
