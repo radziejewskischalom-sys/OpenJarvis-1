@@ -12,3 +12,6 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 rand = { workspace = true }
 parking_lot = { workspace = true }
+rusqlite = { workspace = true }
+uuid = { workspace = true }
+regex = { workspace = true }

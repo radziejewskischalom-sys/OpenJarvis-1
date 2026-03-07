@@ -5,6 +5,7 @@
 pub mod bandit;
 pub mod grpo;
 pub mod heuristic;
+pub mod optimize;
 pub mod router_enum;
 pub mod traits;
 
