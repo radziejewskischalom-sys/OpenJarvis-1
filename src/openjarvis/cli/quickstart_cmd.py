@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import click
 from rich.console import Console
 
@@ -12,6 +14,8 @@ from openjarvis.core.config import (
     generate_default_toml,
     recommend_engine,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _check_engine_health(engine_key: str) -> bool:
@@ -27,7 +31,8 @@ def _check_engine_health(engine_key: str) -> bool:
             return False
         engine = _discovery._make_engine(engine_key, config)
         return engine.health()
-    except Exception:
+    except Exception as exc:
+        logger.warning("Engine health check failed for %r: %s", engine_key, exc)
         return False
 
 
@@ -43,7 +48,8 @@ def _check_model_available(engine_key: str) -> bool:
             return False
         engine = _discovery._make_engine(engine_key, config)
         return bool(engine.list_models())
-    except Exception:
+    except Exception as exc:
+        logger.warning("Model availability check failed for %r: %s", engine_key, exc)
         return False
 
 
