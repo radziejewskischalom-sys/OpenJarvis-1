@@ -279,6 +279,33 @@ def test_update_agent_budget_fields(tmp_path):
     mgr.close()
 
 
+def test_learning_log_crud(tmp_path):
+    """AgentManager can write and read learning log entries."""
+    from openjarvis.agents.manager import AgentManager
+
+    mgr = AgentManager(str(tmp_path / "test.db"))
+    agent = mgr.create_agent("learner")
+
+    entry = mgr.add_learning_log(
+        agent["id"],
+        "cycle_completed",
+        description="Analyzed 20 traces",
+        data={"sft_pairs": 5, "status": "completed"},
+    )
+    assert entry["event_type"] == "cycle_completed"
+
+    logs = mgr.list_learning_log(agent["id"])
+    assert len(logs) == 1
+    assert logs[0]["data"]["sft_pairs"] == 5
+
+    # Add a second entry
+    mgr.add_learning_log(agent["id"], "skill_discovered", description="Found new skill")
+    logs = mgr.list_learning_log(agent["id"])
+    assert len(logs) == 2
+
+    mgr.close()
+
+
 class TestSchemaAndThreading:
     def test_agent_has_runtime_columns(self, manager):
         """New columns from ALTER TABLE migration should exist."""
