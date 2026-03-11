@@ -61,6 +61,18 @@ CREATE TABLE IF NOT EXISTS agent_checkpoints (
 );
 """
 
+_CREATE_MESSAGES = """\
+CREATE TABLE IF NOT EXISTS agent_messages (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL REFERENCES managed_agents(id),
+    direction TEXT NOT NULL,
+    content TEXT NOT NULL,
+    mode TEXT NOT NULL DEFAULT 'queued',
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at REAL NOT NULL
+);
+"""
+
 _SUMMARY_MAX = 2000
 
 
@@ -77,6 +89,7 @@ class AgentManager:
         self._conn.execute(_CREATE_TASKS)
         self._conn.execute(_CREATE_BINDINGS)
         self._conn.executescript(_CREATE_CHECKPOINTS)
+        self._conn.executescript(_CREATE_MESSAGES)
         self._conn.commit()
         # Schema migrations for runtime columns
         _MIGRATIONS = [
@@ -433,6 +446,84 @@ class AgentManager:
             config.update(overrides)
         agent_type = config.pop("agent_type", "monitor_operative")
         return self.create_agent(name=name, agent_type=agent_type, config=config)
+
+    # ── Message queue ─────────────────────────────────────────────
+
+    def send_message(self, agent_id: str, content: str, mode: str = "queued") -> dict:
+        msg_id = uuid4().hex[:16]
+        now = time.time()
+        _sql = (
+            "INSERT INTO agent_messages"
+            " (id, agent_id, direction, content, mode, status, created_at)"
+            " VALUES (?, ?, 'user_to_agent', ?, ?, 'pending', ?)"
+        )
+        self._conn.execute(_sql, (msg_id, agent_id, content, mode, now))
+        self._conn.commit()
+        return {
+            "id": msg_id,
+            "agent_id": agent_id,
+            "direction": "user_to_agent",
+            "content": content,
+            "mode": mode,
+            "status": "pending",
+            "created_at": now,
+        }
+
+    def list_messages(self, agent_id: str, limit: int = 50) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT * FROM agent_messages"
+            " WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?",
+            (agent_id, limit),
+        ).fetchall()
+        return [self._row_to_message(r) for r in rows]
+
+    def get_pending_messages(self, agent_id: str) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT * FROM agent_messages"
+            " WHERE agent_id = ? AND direction = 'user_to_agent'"
+            " AND status = 'pending' ORDER BY created_at ASC",
+            (agent_id,),
+        ).fetchall()
+        return [self._row_to_message(r) for r in rows]
+
+    def mark_message_delivered(self, message_id: str) -> None:
+        self._conn.execute(
+            "UPDATE agent_messages SET status = 'delivered' WHERE id = ?",
+            (message_id,),
+        )
+        self._conn.commit()
+
+    def add_agent_response(self, agent_id: str, content: str) -> dict:
+        msg_id = uuid4().hex[:16]
+        now = time.time()
+        _sql = (
+            "INSERT INTO agent_messages"
+            " (id, agent_id, direction, content, mode, status, created_at)"
+            " VALUES (?, ?, 'agent_to_user', ?, 'immediate', 'responded', ?)"
+        )
+        self._conn.execute(_sql, (msg_id, agent_id, content, now))
+        self._conn.commit()
+        return {
+            "id": msg_id,
+            "agent_id": agent_id,
+            "direction": "agent_to_user",
+            "content": content,
+            "mode": "immediate",
+            "status": "responded",
+            "created_at": now,
+        }
+
+    @staticmethod
+    def _row_to_message(row: sqlite3.Row) -> dict:
+        return {
+            "id": row["id"],
+            "agent_id": row["agent_id"],
+            "direction": row["direction"],
+            "content": row["content"],
+            "mode": row["mode"],
+            "status": row["status"],
+            "created_at": row["created_at"],
+        }
 
     # ── Row converters ────────────────────────────────────────────
 

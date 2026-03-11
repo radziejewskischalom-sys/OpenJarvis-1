@@ -206,6 +206,44 @@ class TestCheckpoints:
         assert manager.get_agent(agent["id"])["status"] == "idle"
 
 
+class TestMessageQueue:
+    def test_send_queued_message(self, manager):
+        agent = manager.create_agent(name="test", agent_type="simple")
+        msg = manager.send_message(agent["id"], "Focus on transformers", mode="queued")
+        assert msg["id"]
+        assert msg["direction"] == "user_to_agent"
+        assert msg["mode"] == "queued"
+        assert msg["status"] == "pending"
+
+    def test_list_messages(self, manager):
+        agent = manager.create_agent(name="test", agent_type="simple")
+        manager.send_message(agent["id"], "msg1", mode="queued")
+        manager.send_message(agent["id"], "msg2", mode="queued")
+        messages = manager.list_messages(agent["id"])
+        assert len(messages) == 2
+
+    def test_get_pending_messages(self, manager):
+        agent = manager.create_agent(name="test", agent_type="simple")
+        manager.send_message(agent["id"], "pending1", mode="queued")
+        manager.send_message(agent["id"], "pending2", mode="queued")
+        pending = manager.get_pending_messages(agent["id"])
+        assert len(pending) == 2
+        assert all(m["status"] == "pending" for m in pending)
+
+    def test_mark_messages_delivered(self, manager):
+        agent = manager.create_agent(name="test", agent_type="simple")
+        msg = manager.send_message(agent["id"], "test", mode="queued")
+        manager.mark_message_delivered(msg["id"])
+        messages = manager.list_messages(agent["id"])
+        assert messages[0]["status"] == "delivered"
+
+    def test_add_agent_response(self, manager):
+        agent = manager.create_agent(name="test", agent_type="simple")
+        manager.send_message(agent["id"], "What did you find?", mode="immediate")
+        resp = manager.add_agent_response(agent["id"], "Found 3 papers")
+        assert resp["direction"] == "agent_to_user"
+
+
 class TestSchemaAndThreading:
     def test_agent_has_runtime_columns(self, manager):
         """New columns from ALTER TABLE migration should exist."""
