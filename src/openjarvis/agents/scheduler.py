@@ -58,6 +58,7 @@ class AgentScheduler:
         self._bus = event_bus
         # agent_id -> {schedule_type, schedule_value, next_fire}
         self._agents: dict[str, dict] = {}
+        self._tick_counts: dict[str, int] = {}
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -113,6 +114,8 @@ class AgentScheduler:
         """Start the scheduler background thread."""
         if self.is_running:
             return
+        if self._bus:
+            self._bus.subscribe(EventType.AGENT_TICK_END, self._on_tick_event)
         self._stop_event.clear()
         self._thread = threading.Thread(
             target=self._loop, daemon=True, name="agent-scheduler"
@@ -123,6 +126,8 @@ class AgentScheduler:
     def stop(self) -> None:
         """Stop the scheduler background thread."""
         self._stop_event.set()
+        if self._bus:
+            self._bus.unsubscribe(EventType.AGENT_TICK_END, self._on_tick_event)
         if self._thread is not None:
             self._thread.join(timeout=10)
             self._thread = None
@@ -226,3 +231,44 @@ class AgentScheduler:
                     "Agent %s stalled (retry %d/%d)",
                     agent["id"], current_retries + 1, max_retries,
                 )
+
+    # -- Learning tick counting ------------------------------------------------
+
+    def _on_tick_completed(self, agent_id: str) -> None:
+        """Track completed ticks and trigger learning if schedule is met."""
+        self._tick_counts[agent_id] = self._tick_counts.get(agent_id, 0) + 1
+
+        agent = self._manager.get_agent(agent_id)
+        if agent is None:
+            return
+
+        config = agent.get("config", {})
+        if not config.get("learning_enabled", False):
+            return
+
+        schedule = config.get("learning_schedule", "every_20_ticks")
+        if schedule.startswith("every_"):
+            try:
+                threshold = int(schedule.split("_")[1].replace("ticks", ""))
+            except (IndexError, ValueError):
+                threshold = 20
+        else:
+            return
+
+        if self._tick_counts[agent_id] >= threshold:
+            self._tick_counts[agent_id] = 0
+            if self._bus:
+                self._bus.publish(EventType.AGENT_LEARNING_STARTED, {
+                    "agent_id": agent_id,
+                })
+            logger.info(
+                "Learning triggered for agent %s after %d ticks",
+                agent_id,
+                threshold,
+            )
+
+    def _on_tick_event(self, event: Any) -> None:
+        """Handle AGENT_TICK_END to count ticks."""
+        agent_id = event.data.get("agent_id")
+        if agent_id and event.data.get("status") == "ok":
+            self._on_tick_completed(agent_id)
